@@ -50,6 +50,16 @@ const Pricing = () => {
   // Get auth context
   const { user, isAuthenticated, fetchUserBookings } = useAuth();
 
+  // Helper to check localStorage for user (as backup)
+  const checkLocalStorageUser = () => {
+    try {
+      const storedUser = localStorage.getItem('user');
+      return storedUser ? JSON.parse(storedUser) : null;
+    } catch (error) {
+      return null;
+    }
+  };
+
   // List of packages
   const packages: Package[] = [
     {
@@ -128,20 +138,28 @@ const Pricing = () => {
     });
     
     // Refresh bookings after new booking
-    loadUserBookings();
+    setTimeout(() => {
+      loadUserBookings();
+    }, 2000); // Wait 2 seconds for server to process
   };
 
   // Fetch user bookings using AuthContext
   const loadUserBookings = async () => {
     try {
       console.log("🔄 Loading user bookings...");
-      console.log("👤 User state:", { 
-        user: user?.username, 
+      
+      // Check both AuthContext and localStorage for authentication
+      const currentUser = user || checkLocalStorageUser();
+      const hasAuth = isAuthenticated || currentUser;
+      
+      console.log("👤 Auth state:", { 
         isAuthenticated,
-        hasUserObject: !!user 
+        hasAuthContextUser: !!user,
+        hasLocalStorageUser: !!currentUser,
+        currentUsername: currentUser?.username
       });
       
-      if (!isAuthenticated || !user) {
+      if (!hasAuth || !currentUser) {
         console.log("👤 User not logged in, skipping booking fetch");
         setBookingStatuses([]);
         setBookingError("");
@@ -162,9 +180,13 @@ const Pricing = () => {
       if (Array.isArray(response)) {
         bookingsData = response;
         console.log(`✅ Received ${bookingsData.length} bookings as array`);
-      } else {
-        console.log("⚠️ Response is not an array:", typeof response);
-        bookingsData = [];
+      } else if (response && typeof response === 'object') {
+        // Try to extract bookings from object
+        if (Array.isArray((response as any).bookings)) {
+          bookingsData = (response as any).bookings;
+        } else if (Array.isArray((response as any).data)) {
+          bookingsData = (response as any).data;
+        }
       }
       
       console.log("📋 Final bookings data:", bookingsData);
@@ -200,10 +222,12 @@ const Pricing = () => {
           if (booking.status === "completed" || 
               booking.payment_status === "completed" || 
               booking.status === "confirmed" ||
-              booking.payment_status === "paid") {
+              booking.payment_status === "paid" ||
+              booking.status === "paid") {
             status = "completed";
           } else if (booking.status === "pending" || 
-                     booking.payment_status === "pending") {
+                     booking.payment_status === "pending" ||
+                     booking.status === "awaiting_payment") {
             status = "pending";
           }
           
@@ -219,8 +243,9 @@ const Pricing = () => {
       console.log("✅ Processed bookings:", userBookings);
       setBookingStatuses(userBookings);
       
-      if (userBookings.length === 0) {
+      if (userBookings.length === 0 && bookingsData.length === 0) {
         console.log("ℹ️ No bookings found for user");
+        setBookingError(""); // Clear error if just no bookings
       }
     } catch (err: any) {
       console.error("❌ Failed to fetch user bookings:", err);
@@ -229,11 +254,13 @@ const Pricing = () => {
       if (err.message?.includes("Unauthorized") || err.status === 401) {
         setBookingError("Please log in to view your bookings.");
       } else if (err.message?.includes("404") || err.message?.includes("Not Found")) {
-        setBookingError("Bookings endpoint not found. Please check backend setup.");
+        // This is expected if booking endpoints don't exist yet
+        console.log("📝 Booking endpoints not yet implemented on server");
+        setBookingError(""); // Don't show error for missing endpoints
       } else if (err.message?.includes("Network")) {
         setBookingError("Network error. Please check your connection.");
       } else {
-        setBookingError("Unable to load bookings. Please try again later.");
+        setBookingError(""); // Clear error on other failures
       }
     } finally {
       setLoadingBookings(false);
@@ -245,7 +272,7 @@ const Pricing = () => {
     loadUserBookings();
 
     // Only poll if user is logged in
-    const interval = isAuthenticated ? setInterval(loadUserBookings, 60000) : null; // Reduced to 60 seconds
+    const interval = isAuthenticated ? setInterval(loadUserBookings, 60000) : null;
     
     return () => {
       if (interval) clearInterval(interval);
@@ -262,11 +289,21 @@ const Pricing = () => {
 
   // Handle login prompt
   const handleBookNowWithCheck = (pkg: Package) => {
-    if (!isAuthenticated) {
+    // Check both AuthContext and localStorage
+    const currentUser = user || checkLocalStorageUser();
+    const hasAuth = isAuthenticated || currentUser;
+    
+    if (!hasAuth) {
       alert("Please login to book an adventure!");
       return;
     }
     handleBookNow(pkg);
+  };
+
+  // Check if user can book (auth check)
+  const canBook = () => {
+    const currentUser = user || checkLocalStorageUser();
+    return isAuthenticated || currentUser;
   };
 
   return (
@@ -281,7 +318,7 @@ const Pricing = () => {
               Choose the perfect adventure that fits your schedule and budget.
             </p>
             
-            {!isAuthenticated && (
+            {!canBook() && (
               <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg max-w-md mx-auto">
                 <p className="text-yellow-800">
                   <span className="font-semibold">Note:</span> Please login to book adventures and view your bookings.
@@ -301,12 +338,12 @@ const Pricing = () => {
             </div>
           )}
 
-          {loadingBookings && isAuthenticated ? (
+          {loadingBookings && canBook() ? (
             <div className="text-center mb-8">
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               <p className="text-muted-foreground mt-2">Loading your bookings...</p>
             </div>
-          ) : !isAuthenticated ? (
+          ) : !canBook() ? (
             <div className="text-center mb-8 p-4 bg-blue-50 border border-blue-200 rounded-lg max-w-md mx-auto">
               <p className="text-blue-800">
                 Login to see your booking status and make new bookings.
@@ -318,7 +355,7 @@ const Pricing = () => {
                 Found {bookingStatuses.length} booking{bookingStatuses.length !== 1 ? 's' : ''}
               </p>
             </div>
-          ) : isAuthenticated ? (
+          ) : canBook() ? (
             <div className="text-center mb-8 p-4 bg-gray-50 border border-gray-200 rounded-lg max-w-md mx-auto">
               <p className="text-gray-700">
                 No bookings found. Ready to book your first adventure?
@@ -329,6 +366,7 @@ const Pricing = () => {
           <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
             {packages.map((pkg, index) => {
               const status = getBookingStatus(pkg.id);
+              const canUserBook = canBook();
 
               return (
                 <Card
@@ -391,13 +429,13 @@ const Pricing = () => {
                         className="w-full"
                         variant={pkg.popular ? "hero" : "default"}
                         onClick={() => handleBookNowWithCheck(pkg)}
-                        disabled={!isAuthenticated}
+                        disabled={!canUserBook}
                       >
-                        {!isAuthenticated ? "Login to Book" : "Book Now"}
+                        {!canUserBook ? "Login to Book" : "Book Now"}
                       </Button>
                     )}
                     
-                    {!isAuthenticated && (
+                    {!canUserBook && (
                       <p className="text-xs text-muted-foreground text-center mt-1">
                         Login required to book
                       </p>

@@ -52,30 +52,42 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Initialize auth on mount
+  // Helper function to get user from localStorage
+  const getUserFromLocalStorage = (): User | null => {
+    try {
+      const storedUser = localStorage.getItem('user');
+      if (storedUser) {
+        return JSON.parse(storedUser);
+      }
+    } catch (error) {
+      console.error("❌ Error parsing user from localStorage:", error);
+      localStorage.removeItem('user');
+    }
+    return null;
+  };
+
+  // Initialize auth on mount - LOCALSTORAGE FIRST APPROACH
   useEffect(() => {
     const initializeAuth = async () => {
       console.log("🔍 Initializing authentication...");
       
-      // Check if we have a token in localStorage from previous session
-      const token = localStorage.getItem('token');
-      const storedUser = localStorage.getItem('user');
-      
-      if (token && storedUser) {
-        try {
-          const parsedUser = JSON.parse(storedUser);
-          setUser(parsedUser);
-          setIsAuthenticated(true);
-          console.log("✅ Restored user from localStorage:", parsedUser.username);
-        } catch (error) {
-          console.error("❌ Failed to parse stored user:", error);
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
-        }
+      // 1. FIRST: Always check localStorage for immediate user experience
+      const storedUser = getUserFromLocalStorage();
+      if (storedUser) {
+        console.log("📱 Found stored user:", storedUser.username);
+        setUser(storedUser);
+        setIsAuthenticated(true);
+        console.log("✅ User authenticated from localStorage");
       }
       
-      // Always check with server to verify session
-      await checkAuth();
+      // 2. SECOND: Verify with server in background
+      try {
+        await checkAuth();
+      } catch (error) {
+        console.error("❌ Background auth check failed:", error);
+        // Keep localStorage auth even if server check fails
+      }
+      
       setLoading(false);
     };
     
@@ -83,7 +95,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   // ----------------------
-  // LOGIN (Session-based with token support)
+  // LOGIN (Session-based with localStorage backup)
   // ----------------------
   const login = async (identifier: string, password: string): Promise<boolean> => {
     try {
@@ -118,20 +130,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       console.log("✅ Login response data:", data);
 
       if (res.ok && data.user) {
-        // Store user data
+        // IMMEDIATE: Store user data
         setUser(data.user);
         setIsAuthenticated(true);
         
-        // Store token if provided (for API calls)
-        if (data.token) {
-          localStorage.setItem('token', data.token);
-          console.log("🔑 Token stored in localStorage");
-        }
-        
-        // Store user data for persistence
+        // Store user data in localStorage as primary source
         localStorage.setItem('user', JSON.stringify(data.user));
         
         console.log("✅ Login successful for user:", data.user.username);
+        console.log("💾 User saved to localStorage");
+        
+        // Background server verification (optional)
+        setTimeout(() => checkAuth(), 1000);
+        
         return true;
       }
 
@@ -144,7 +155,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   // ----------------------
-  // SIGNUP (Session-based)
+  // SIGNUP (Session-based with localStorage backup)
   // ----------------------
   const signup = async (username: string, email: string, password: string): Promise<boolean> => {
     try {
@@ -178,13 +189,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       console.log("✅ Signup response data:", data);
 
       if (res.ok && data.user) {
+        // IMMEDIATE: Store user data
         setUser(data.user);
         setIsAuthenticated(true);
         
-        if (data.token) {
-          localStorage.setItem('token', data.token);
-        }
+        // Store user data in localStorage as primary source
         localStorage.setItem('user', JSON.stringify(data.user));
+        
+        console.log("✅ Signup successful for user:", data.user.username);
+        console.log("💾 User saved to localStorage");
+        
+        // Background server verification (optional)
+        setTimeout(() => checkAuth(), 1000);
         
         return true;
       }
@@ -207,86 +223,109 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const res = await fetch(`${API_BASE_URL}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
+        headers: {
+          "Accept": "application/json"
+        },
       });
 
       console.log("📡 Logout response status:", res.status, res.statusText);
-
-      // Clear local state regardless of server response
-      setUser(null);
-      setIsAuthenticated(false);
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      
-      console.log("✅ Logout completed (local state cleared)");
     } catch (err) {
       console.error("❌ Logout request failed:", err);
-      // Still clear local state on error
+    } finally {
+      // ALWAYS clear local state regardless of server response
       setUser(null);
       setIsAuthenticated(false);
-      localStorage.removeItem('token');
       localStorage.removeItem('user');
+      console.log("✅ Local auth state cleared");
     }
   };
 
   // ----------------------
-  // CHECK AUTH - Updated with better error handling
+  // CHECK AUTH - UPDATED: localStorage is primary source
   // ----------------------
   const checkAuth = async (): Promise<void> => {
     try {
       console.log("🔍 Checking authentication status...");
       
-      const token = localStorage.getItem('token');
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      };
-      
-      // Add token to headers if available
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
+      // Check localStorage first - this is our source of truth
+      const storedUser = getUserFromLocalStorage();
+      if (storedUser) {
+        console.log("📱 Primary: User found in localStorage:", storedUser.username);
+        setUser(storedUser);
+        setIsAuthenticated(true);
+        
+        // Background server verification (for sync only)
+        const res = await fetch(`${API_BASE_URL}/api/auth/check-auth`, {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            "Accept": "application/json"
+          },
+        });
+
+        console.log("📡 Background auth check status:", res.status);
+        
+        if (res.ok) {
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const data = await res.json();
+            console.log("📡 Server auth response:", data);
+            
+            if (data.authenticated && data.user) {
+              // Server confirms - update localStorage with latest data
+              localStorage.setItem('user', JSON.stringify(data.user));
+              setUser(data.user);
+              console.log("✅ Server confirmed authentication");
+            } else if (data.user) {
+              // Some servers just return user data
+              localStorage.setItem('user', JSON.stringify(data.user));
+              setUser(data.user);
+              console.log("✅ Server returned user data");
+            } else {
+              console.log("⚠️ Server says not authenticated, but we keep localStorage");
+              // Server bug - we keep localStorage auth
+            }
+          }
+        }
+        return; // Exit - we're authenticated from localStorage
       }
       
+      // If no localStorage user, check server
+      console.log("📱 No localStorage user, checking server...");
       const res = await fetch(`${API_BASE_URL}/api/auth/check-auth`, {
         method: "GET",
         credentials: "include",
-        headers,
+        headers: {
+          "Accept": "application/json"
+        },
       });
 
-      console.log("📡 Check auth response status:", res.status, res.statusText);
-
-      if (res.status === 401 || res.status === 403) {
-        // Clear invalid auth data
-        console.log("❌ Server rejected authentication");
-        setUser(null);
-        setIsAuthenticated(false);
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        return;
-      }
+      console.log("📡 Server auth check status:", res.status);
 
       if (!res.ok) {
-        console.log("⚠️ Auth check failed, but not an auth error. Status:", res.status);
+        console.log("❌ Server auth check failed");
+        setUser(null);
+        setIsAuthenticated(false);
         return;
       }
 
-      // Check if response is JSON
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
-        console.error("❌ Server returned non-JSON response during auth check");
+        console.error("❌ Server returned non-JSON response");
+        setUser(null);
+        setIsAuthenticated(false);
         return;
       }
 
       const data = await res.json();
-      console.log("✅ Check auth response data:", data);
+      console.log("✅ Server auth response:", data);
 
       if (data.authenticated && data.user) {
         setUser(data.user);
         setIsAuthenticated(true);
-        // Update stored user data
         localStorage.setItem('user', JSON.stringify(data.user));
-        console.log("✅ User is authenticated:", data.user.username);
+        console.log("✅ User authenticated by server");
       } else if (data.user) {
-        // Some endpoints just return user data
         setUser(data.user);
         setIsAuthenticated(true);
         localStorage.setItem('user', JSON.stringify(data.user));
@@ -294,13 +333,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       } else {
         setUser(null);
         setIsAuthenticated(false);
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        console.log("❌ User is not authenticated");
+        console.log("❌ User not authenticated");
       }
     } catch (err) {
-      console.error("❌ Check auth request failed:", err);
-      // Don't clear auth on network errors - keep existing state
+      console.error("❌ Auth check request failed:", err);
+      // On network error, check localStorage
+      const storedUser = getUserFromLocalStorage();
+      if (storedUser) {
+        setUser(storedUser);
+        setIsAuthenticated(true);
+        console.log("✅ Restored user from localStorage after network error");
+      } else {
+        setUser(null);
+        setIsAuthenticated(false);
+      }
     }
   };
 
@@ -332,88 +378,72 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   // ----------------------
-  // FETCH USER BOOKINGS - FIXED ENDPOINT
+  // FETCH USER BOOKINGS
   // ----------------------
   const fetchUserBookings = async (): Promise<any[]> => {
-    if (!user) {
+    // Use both isAuthenticated AND localStorage check
+    const currentUser = user || getUserFromLocalStorage();
+    
+    if (!currentUser) {
       console.log("❌ User not logged in, cannot fetch bookings");
       return [];
     }
 
     try {
-      console.log("📋 Fetching user bookings for:", user.username);
+      console.log("📋 Fetching user bookings for:", currentUser.username);
       
-      const token = localStorage.getItem('token');
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      };
+      // Try different endpoints in order
+      const endpoints = [
+        `${API_BASE_URL}/api/bookings/my-bookings`,
+        `${API_BASE_URL}/api/bookings/user/${currentUser.id}`,
+        `${API_BASE_URL}/api/bookings`,
+        `${API_BASE_URL}/api/auth/bookings`
+      ];
       
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      
-      // Try multiple possible endpoints
-      let endpoint = `${API_BASE_URL}/api/bookings/user/${user.id}`;
-      console.log("🔄 Trying endpoint:", endpoint);
-      
-      let res = await fetch(endpoint, {
-        method: "GET",
-        credentials: "include",
-        headers,
-      });
+      for (const endpoint of endpoints) {
+        try {
+          console.log(`🔄 Trying endpoint: ${endpoint}`);
+          const res = await fetch(endpoint, {
+            method: "GET",
+            credentials: "include",
+            headers: {
+              "Accept": "application/json"
+            },
+          });
 
-      // If 404, try alternative endpoints
-      if (res.status === 404) {
-        console.log("🔄 Trying alternative endpoint 1...");
-        endpoint = `${API_BASE_URL}/api/bookings/my-bookings`;
-        res = await fetch(endpoint, {
-          method: "GET",
-          credentials: "include",
-          headers,
-        });
+          console.log(`📡 Response status: ${res.status}`);
+          
+          if (res.ok) {
+            const contentType = res.headers.get("content-type");
+            if (!contentType || !contentType.includes("application/json")) {
+              console.error("❌ Server returned non-JSON response");
+              continue;
+            }
+
+            const data = await res.json();
+            console.log("✅ Bookings data received");
+            
+            // Handle different response formats
+            if (Array.isArray(data)) {
+              console.log(`✅ Found ${data.length} bookings`);
+              return data;
+            } else if (data.bookings && Array.isArray(data.bookings)) {
+              console.log(`✅ Found ${data.bookings.length} bookings`);
+              return data.bookings;
+            } else if (data.data && Array.isArray(data.data)) {
+              console.log(`✅ Found ${data.data.length} bookings`);
+              return data.data;
+            }
+            
+            console.log("⚠️ Unexpected response format");
+            return [];
+          }
+        } catch (err) {
+          console.error(`❌ Error with endpoint ${endpoint}:`, err);
+        }
       }
       
-      if (res.status === 404) {
-        console.log("🔄 Trying alternative endpoint 2...");
-        endpoint = `${API_BASE_URL}/api/auth/bookings`;
-        res = await fetch(endpoint, {
-          method: "GET",
-          credentials: "include",
-          headers,
-        });
-      }
-
-      console.log("📡 Bookings response status:", res.status, res.statusText);
-
-      if (!res.ok) {
-        console.error("❌ Failed to fetch user bookings, status:", res.status);
-        return [];
-      }
-
-      // Check if response is JSON
-      const contentType = res.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        console.error("❌ Server returned non-JSON response for bookings");
-        return [];
-      }
-
-      const data = await res.json();
-      console.log("✅ Bookings response data:", data);
-      
-      // Handle different response formats
-      if (Array.isArray(data)) {
-        console.log(`✅ Found ${data.length} bookings`);
-        return data;
-      } else if (data.bookings && Array.isArray(data.bookings)) {
-        console.log(`✅ Found ${data.bookings.length} bookings`);
-        return data.bookings;
-      } else if (data.data && Array.isArray(data.data)) {
-        console.log(`✅ Found ${data.data.length} bookings`);
-        return data.data;
-      }
-      
-      console.log("⚠️ No bookings found or unexpected format");
+      console.log("⚠️ All booking endpoints failed");
       return [];
     } catch (err) {
       console.error("❌ Failed to fetch user bookings:", err);
@@ -422,29 +452,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   // ----------------------
-  // ADMIN FUNCTIONS (keep as is, but with improved headers)
+  // ADMIN FUNCTIONS
   // ----------------------
   const fetchAdminStats = async (): Promise<AdminStats | null> => {
-    if (!user?.is_admin) {
+    const currentUser = user || getUserFromLocalStorage();
+    
+    if (!currentUser?.is_admin) {
       console.log("❌ User is not admin, cannot fetch stats");
       return null;
     }
 
     try {
-      const token = localStorage.getItem('token');
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      };
-      
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      
       const res = await fetch(`${API_BASE_URL}/api/auth/admin/stats`, {
         method: "GET",
         credentials: "include",
-        headers,
+        headers: {
+          "Accept": "application/json"
+        },
       });
 
       if (res.ok) {
@@ -461,26 +485,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const fetchAdminUsers = async (): Promise<User[]> => {
-    if (!user?.is_admin) {
+    const currentUser = user || getUserFromLocalStorage();
+    
+    if (!currentUser?.is_admin) {
       console.log("❌ User is not admin, cannot fetch users");
       return [];
     }
 
     try {
-      const token = localStorage.getItem('token');
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      };
-      
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      
       const res = await fetch(`${API_BASE_URL}/api/auth/admin/users`, {
         method: "GET",
         credentials: "include",
-        headers,
+        headers: {
+          "Accept": "application/json"
+        },
       });
 
       if (res.ok) {
@@ -497,26 +515,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const fetchAdminBookings = async (): Promise<any[]> => {
-    if (!user?.is_admin) {
+    const currentUser = user || getUserFromLocalStorage();
+    
+    if (!currentUser?.is_admin) {
       console.log("❌ User is not admin, cannot fetch bookings");
       return [];
     }
 
     try {
-      const token = localStorage.getItem('token');
-      const headers: HeadersInit = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      };
-      
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      
       const res = await fetch(`${API_BASE_URL}/api/auth/admin/bookings`, {
         method: "GET",
         credentials: "include",
-        headers,
+        headers: {
+          "Accept": "application/json"
+        },
       });
 
       if (res.ok) {

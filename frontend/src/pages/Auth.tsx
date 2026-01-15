@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { toast } from "react-hot-toast";
 
 const Auth: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -10,8 +9,10 @@ const Auth: React.FC = () => {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [isRedirecting, setIsRedirecting] = useState(false);
   
-  const { login, signup, isAuthenticated, user, checkAuth } = useAuth();
+  const { login, signup, isAuthenticated, user } = useAuth();
   const navigate = useNavigate();
 
   // Debug: Log auth state changes
@@ -19,27 +20,75 @@ const Auth: React.FC = () => {
     console.log("🔍 Auth Component - Auth state:", {
       isAuthenticated,
       user: user ? user.username : null,
+      localStorageUser: localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!).username : 'none'
     });
   }, [isAuthenticated, user]);
 
-  // Check if user is already logged in
+  // Check if user is already logged in (on mount)
   useEffect(() => {
-    const checkUserAuth = async () => {
-      console.log("🔍 Checking initial auth status...");
-      await checkAuth();
-      
-      if (isAuthenticated) {
-        console.log("✅ User already authenticated, redirecting...");
-        navigate("/");
+    const checkIfLoggedIn = () => {
+      try {
+        const storedUser = localStorage.getItem('user');
+        if (storedUser) {
+          const parsedUser = JSON.parse(storedUser);
+          console.log("📱 Found user in localStorage:", parsedUser.username);
+          // If we have localStorage user but React state hasn't updated yet
+          if (!isAuthenticated) {
+            console.log("🔄 LocalStorage user found, waiting for AuthContext sync...");
+          }
+        }
+      } catch (error) {
+        console.error("Error checking localStorage:", error);
       }
     };
     
-    checkUserAuth();
-  }, [isAuthenticated, navigate, checkAuth]);
+    checkIfLoggedIn();
+  }, []);
+
+  // Redirect when authenticated - with multiple checks
+  useEffect(() => {
+    const redirectIfAuthenticated = () => {
+      // Check both AuthContext state AND localStorage
+      const hasAuth = isAuthenticated || localStorage.getItem('user');
+      
+      if (hasAuth && !isRedirecting) {
+        setIsRedirecting(true);
+        console.log("✅ User authenticated, redirecting to home...");
+        
+        // Short delay to show success message
+        setTimeout(() => {
+          navigate("/");
+        }, 500);
+      }
+    };
+    
+    redirectIfAuthenticated();
+  }, [isAuthenticated, user, isRedirecting, navigate]);
+
+  // Additional check: if localStorage has user but AuthContext hasn't updated
+  useEffect(() => {
+    const checkLocalStorageSync = () => {
+      const storedUser = localStorage.getItem('user');
+      if (storedUser && !isAuthenticated) {
+        console.log("⚠️ LocalStorage has user but AuthContext not updated yet");
+        // This should trigger AuthContext to sync
+        setTimeout(() => {
+          if (!isAuthenticated) {
+            console.log("🔄 Still not synced, checking localStorage again...");
+          }
+        }, 1000);
+      }
+    };
+    
+    const interval = setInterval(checkLocalStorageSync, 500);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setMessage(null);
+    setIsRedirecting(false);
 
     try {
       console.log("🔐 Auth form submitted:", {
@@ -58,37 +107,29 @@ const Auth: React.FC = () => {
         
         if (success) {
           console.log("✅ Login successful via AuthContext");
-          toast.success("Login successful!");
+          setMessage({ text: "Login successful! Redirecting...", type: 'success' });
           
-          // Wait a moment for state to update
+          // Force immediate localStorage check
           setTimeout(() => {
-            console.log("🔄 Redirecting after login...");
-            console.log("📊 Current state after login:", {
-              isAuthenticated,
-              user: user?.username,
-            });
-            
-            if (isAuthenticated) {
-              console.log("✅ User authenticated, redirecting to home");
-              navigate("/");
-            } else {
-              console.log("⚠️ Not authenticated after successful login, forcing auth check");
-              // Force auth check and redirect
-              checkAuth().then(() => {
-                setTimeout(() => {
-                  navigate("/");
-                }, 500);
-              });
+            const storedUser = localStorage.getItem('user');
+            if (storedUser) {
+              console.log("💾 Confirmed: User saved to localStorage");
             }
-          }, 1000);
+          }, 100);
         } else {
           console.error("❌ Login failed via AuthContext");
-          toast.error("Login failed. Please check your credentials.");
+          setMessage({ text: "Login failed. Please check your credentials.", type: 'error' });
         }
       } else {
         // Signup flow
         if (password !== confirmPassword) {
-          toast.error("Passwords do not match!");
+          setMessage({ text: "Passwords do not match!", type: 'error' });
+          setLoading(false);
+          return;
+        }
+
+        if (password.length < 6) {
+          setMessage({ text: "Password must be at least 6 characters!", type: 'error' });
           setLoading(false);
           return;
         }
@@ -98,31 +139,23 @@ const Auth: React.FC = () => {
         
         if (success) {
           console.log("✅ Signup successful via AuthContext");
-          toast.success("Account created successfully!");
+          setMessage({ text: "Account created successfully! You are now logged in.", type: 'success' });
           
-          // Auto-login after signup
-          console.log("🔄 Auto-login after signup...");
-          const loginSuccess = await login(username, password);
-          
-          if (loginSuccess) {
-            setTimeout(() => {
-              navigate("/");
-            }, 1000);
-          } else {
-            // If auto-login fails, go to login page
-            setIsLogin(true);
-            setUsername(username);
-            setPassword("");
-            toast.success("Account created! Please login.");
-          }
+          // Force immediate localStorage check
+          setTimeout(() => {
+            const storedUser = localStorage.getItem('user');
+            if (storedUser) {
+              console.log("💾 Confirmed: User saved to localStorage after signup");
+            }
+          }, 100);
         } else {
           console.error("❌ Signup failed via AuthContext");
-          toast.error("Signup failed. Please try again.");
+          setMessage({ text: "Signup failed. Please try again.", type: 'error' });
         }
       }
     } catch (error) {
       console.error("❌ Auth error:", error);
-      toast.error("An error occurred. Please try again.");
+      setMessage({ text: "An error occurred. Please try again.", type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -130,6 +163,8 @@ const Auth: React.FC = () => {
 
   const handleDemoLogin = async (demoUser: string) => {
     setLoading(true);
+    setMessage(null);
+    setIsRedirecting(false);
     
     // Demo credentials
     const credentials: Record<string, { username: string; password: string }> = {
@@ -146,18 +181,14 @@ const Auth: React.FC = () => {
       const success = await login(creds.username, creds.password);
       
       if (success) {
-        toast.success(`Logged in as ${demoUser}!`);
+        setMessage({ text: `Logged in as ${demoUser}! Redirecting...`, type: 'success' });
         console.log("✅ Demo login successful");
-        
-        setTimeout(() => {
-          navigate("/");
-        }, 1000);
       } else {
-        toast.error("Demo login failed. Please try manual login.");
+        setMessage({ text: "Demo login failed. Please try manual login.", type: 'error' });
       }
     } catch (error) {
       console.error("❌ Demo login error:", error);
-      toast.error("Demo login failed.");
+      setMessage({ text: "Demo login failed.", type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -177,6 +208,29 @@ const Auth: React.FC = () => {
             </p>
           </div>
 
+          {/* Message Display */}
+          {message && (
+            <div className={`mb-6 p-3 rounded-lg ${message.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+              <div className="flex items-center">
+                {message.type === 'success' ? (
+                  <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                )}
+                <span>{message.text}</span>
+                {message.type === 'success' && (
+                  <div className="ml-2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-700"></div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Demo Login Buttons */}
           {isLogin && (
             <div className="mb-6">
@@ -186,14 +240,14 @@ const Auth: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => handleDemoLogin("admin")}
-                  disabled={loading}
+                  disabled={loading || isRedirecting}
                   className="flex-1 bg-purple-100 text-purple-700 py-2 px-4 rounded-lg font-medium hover:bg-purple-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Admin Demo
                 </button>
                 <button
                   onClick={() => handleDemoLogin("user")}
-                  disabled={loading}
+                  disabled={loading || isRedirecting}
                   className="flex-1 bg-blue-100 text-blue-700 py-2 px-4 rounded-lg font-medium hover:bg-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   User Demo
@@ -216,7 +270,7 @@ const Auth: React.FC = () => {
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
                   placeholder="Enter your email"
                   required
-                  disabled={loading}
+                  disabled={loading || isRedirecting}
                 />
               </div>
             )}
@@ -232,7 +286,7 @@ const Auth: React.FC = () => {
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
                 placeholder={isLogin ? "Enter username or email" : "Choose a username"}
                 required
-                disabled={loading}
+                disabled={loading || isRedirecting}
               />
             </div>
 
@@ -248,8 +302,13 @@ const Auth: React.FC = () => {
                 placeholder="Enter password"
                 required
                 minLength={6}
-                disabled={loading}
+                disabled={loading || isRedirecting}
               />
+              {!isLogin && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Must be at least 6 characters
+                </p>
+              )}
             </div>
 
             {!isLogin && (
@@ -265,17 +324,25 @@ const Auth: React.FC = () => {
                   placeholder="Confirm your password"
                   required
                   minLength={6}
-                  disabled={loading}
+                  disabled={loading || isRedirecting}
                 />
               </div>
             )}
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || isRedirecting}
               className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white py-3 px-4 rounded-lg font-semibold hover:from-blue-700 hover:to-blue-800 focus:ring-4 focus:ring-blue-300 transition-all disabled:opacity-70 disabled:cursor-not-allowed"
             >
-              {loading ? (
+              {isRedirecting ? (
+                <span className="flex items-center justify-center">
+                  <svg className="animate-spin h-5 w-5 mr-3 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Redirecting...
+                </span>
+              ) : loading ? (
                 <span className="flex items-center justify-center">
                   <svg className="animate-spin h-5 w-5 mr-3 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -299,9 +366,10 @@ const Auth: React.FC = () => {
                   // Clear password fields when toggling
                   setPassword("");
                   setConfirmPassword("");
+                  setMessage(null);
                 }}
                 className="text-blue-600 font-medium hover:text-blue-800 transition-colors"
-                disabled={loading}
+                disabled={loading || isRedirecting}
               >
                 {isLogin ? "Sign up" : "Sign in"}
               </button>
@@ -309,12 +377,18 @@ const Auth: React.FC = () => {
           </div>
 
           {/* Debug info (remove in production) */}
-          <div className="mt-6 pt-6 border-t border-gray-200">
-            <p className="text-xs text-gray-500 text-center">
-              Debug: Auth State - {isAuthenticated ? "Authenticated" : "Not Authenticated"}
-              {user && ` | User: ${user.username}`}
-            </p>
-          </div>
+          {process.env.NODE_ENV === 'development' && (
+            <div className="mt-6 pt-6 border-t border-gray-200">
+              <p className="text-xs text-gray-500 text-center">
+                Debug: Auth State - {isAuthenticated ? "Authenticated" : "Not Authenticated"}
+                {user && ` | User: ${user.username}`}
+                {isRedirecting && " | Redirecting..."}
+              </p>
+              <p className="text-xs text-gray-400 text-center mt-1">
+                localStorage: {localStorage.getItem('user') ? 'Has user' : 'No user'}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Home link */}
